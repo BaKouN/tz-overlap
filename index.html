@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PROTOTYPE - Timezone overlap</title>
+<!-- PROTOTYPE JETABLE - Question : quelles heures de libre en commun avec un client en Australie ? -->
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "Segoe UI", sans-serif; background: #f4f5f7; color: #1e2430; padding: 24px; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  .sub { color: #6b7280; font-size: 13px; margin-bottom: 20px; }
+  .cards { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 24px; }
+  .card { background: #fff; border: 1px solid #e2e5ea; border-radius: 10px; padding: 16px; flex: 1; min-width: 320px; }
+  .card h2 input { font-size: 16px; font-weight: 700; border: none; border-bottom: 1px dashed #cbd2dc; background: transparent; width: 160px; }
+  .tzrow { display: flex; align-items: center; gap: 10px; margin: 12px 0; }
+  .tzrow input[type=range] { flex: 1; }
+  .tzlabel { font-size: 13px; font-weight: 600; white-space: nowrap; min-width: 150px; text-align: right; color: #374151; }
+  .blockrow { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+  .blockrow input[type=text] { width: 110px; padding: 4px 6px; border: 1px solid #d6dae1; border-radius: 6px; font-size: 13px; }
+  .blockrow input[type=time] { padding: 3px 4px; border: 1px solid #d6dae1; border-radius: 6px; font-size: 13px; }
+  .blockrow .del { border: none; background: #fee2e2; color: #b91c1c; border-radius: 6px; width: 24px; height: 24px; cursor: pointer; }
+  .addbtn { margin-top: 8px; border: 1px dashed #9aa3af; background: transparent; border-radius: 6px; padding: 5px 10px; font-size: 13px; cursor: pointer; color: #374151; }
+  .addbtn:hover { background: #eef0f3; }
+
+  .timeline { background: #fff; border: 1px solid #e2e5ea; border-radius: 10px; padding: 16px; margin-bottom: 20px; }
+  .lane { position: relative; height: 34px; margin: 4px 0; background: #eef0f3; border-radius: 6px; overflow: hidden; }
+  .lane .seg { position: absolute; top: 0; height: 100%; display: flex; align-items: center; justify-content: center;
+               font-size: 11px; font-weight: 600; color: #fff; overflow: hidden; white-space: nowrap; }
+  .lanename { font-size: 12px; font-weight: 700; color: #4b5563; margin-top: 10px; }
+  .ticks { position: relative; height: 16px; font-size: 10px; color: #6b7280; }
+  .ticks span { position: absolute; transform: translateX(-50%); }
+  .gridwrap { position: relative; }
+  .gridlines { position: absolute; inset: 0; pointer-events: none; }
+  .gridlines i { position: absolute; top: 0; bottom: 0; width: 1px; background: rgba(0,0,0,.06); }
+
+  .summary { background: #fff; border: 1px solid #e2e5ea; border-radius: 10px; padding: 16px; }
+  .summary h3 { font-size: 15px; margin-bottom: 8px; }
+  .total { font-size: 14px; font-weight: 700; color: #047857; margin-bottom: 8px; }
+  .range { font-size: 13px; padding: 4px 0; border-bottom: 1px solid #f0f2f5; }
+  .range b { color: #047857; }
+  .none { color: #b91c1c; font-weight: 600; font-size: 14px; }
+</style>
+</head>
+<body>
+  <h1>Availability overlap - timezones 🇫🇷🇦🇺</h1>
+  <div class="sub">Throwaway PROTOTYPE. Blocks are in each person's local time. The timeline is shown in person 1's timezone. Green = free for both.</div>
+
+  <div class="cards" id="cards"></div>
+  <div class="timeline" id="timeline"></div>
+  <div class="summary" id="summary"></div>
+
+<script>
+const CITIES = { "-10":"Honolulu", "-8":"Los Angeles", "-7":"Denver", "-6":"Mexico", "-5":"New York",
+  "-3":"São Paulo", "0":"London", "1":"Paris/Lyon (winter)", "2":"Paris/Lyon (summer)", "3":"Moscow", "4":"Dubai",
+  "5.5":"India", "7":"Bangkok", "8":"Perth / Singapore", "9":"Tokyo", "9.5":"Adelaide",
+  "10":"Sydney / Brisbane", "11":"Sydney (summer)", "12":"Auckland" };
+
+const defaultBlocks = () => ([
+  { label: "😴 Sleep", start: "23:00", end: "07:00" },
+  { label: "💼 Work", start: "09:00", end: "12:30" },
+  { label: "💼 Work", start: "14:00", end: "18:00" },
+]);
+
+const state = {
+  people: [
+    { name: "Haroun", offset: 2, blocks: defaultBlocks() },
+    { name: "Client AU", offset: 10, blocks: defaultBlocks() },
+  ]
+};
+
+const toMin = t => { const [h, m] = t.split(":").map(Number); return h * 60 + m; };
+const fmt = min => { min = ((min % 1440) + 1440) % 1440;
+  return String(Math.floor(min / 60)).padStart(2, "0") + ":" + String(min % 60).padStart(2, "0"); };
+const tzName = o => { const c = CITIES[String(o)]; const s = "UTC" + (o >= 0 ? "+" : "") + o;
+  return c ? s + " · " + c : s; };
+const colorFor = label => {
+  const l = label.toLowerCase();
+  if (l.includes("somme") || l.includes("sleep") || l.includes("dodo")) return "#4c4f8f";
+  if (l.includes("trav") || l.includes("work")) return "#d97706";
+  return "#64748b";
+};
+
+// axis = heure locale de la personne 0. Minute t de l'axe = minute locale (t + d) pour la personne p.
+const shiftOf = p => Math.round((p.offset - state.people[0].offset) * 60);
+
+function busyArray(p) {
+  const d = shiftOf(p);
+  const busy = new Array(1440).fill(false);
+  for (let t = 0; t < 1440; t++) {
+    const local = ((t + d) % 1440 + 1440) % 1440;
+    for (const b of p.blocks) {
+      const s = toMin(b.start), e = toMin(b.end);
+      if (s === e) continue;
+      const inBlock = s < e ? (local >= s && local < e) : (local >= s || local < e);
+      if (inBlock) { busy[t] = true; break; }
+    }
+  }
+  return busy;
+}
+
+// [s, e) locaux -> segments sur l'axe (coupés à minuit si besoin)
+function axisSegments(p, b) {
+  const d = shiftOf(p);
+  let s = toMin(b.start), e = toMin(b.end);
+  if (s === e) return [];
+  if (e < s) e += 1440;
+  let as = s - d, ae = e - d;
+  as = ((as % 1440) + 1440) % 1440;
+  ae = as + (e - s);
+  const segs = [];
+  if (ae <= 1440) segs.push([as, ae]);
+  else { segs.push([as, 1440]); segs.push([0, ae - 1440]); }
+  return segs;
+}
+
+function renderCards() {
+  const el = document.getElementById("cards");
+  el.innerHTML = "";
+  state.people.forEach((p, pi) => {
+    const card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML = `
+      <h2><input type="text" value="${p.name}" data-pi="${pi}" class="nameinput"></h2>
+      <div class="tzrow">
+        <input type="range" min="-12" max="14" step="0.5" value="${p.offset}" data-pi="${pi}" class="tzslider">
+        <span class="tzlabel" id="tzlabel-${pi}">${tzName(p.offset)}</span>
+      </div>
+      <div id="blocks-${pi}"></div>
+      <button class="addbtn" data-pi="${pi}">+ Add block</button>`;
+    el.appendChild(card);
+
+    const bl = card.querySelector(`#blocks-${pi}`);
+    p.blocks.forEach((b, bi) => {
+      const row = document.createElement("div");
+      row.className = "blockrow";
+      row.innerHTML = `
+        <input type="text" value="${b.label}" data-pi="${pi}" data-bi="${bi}" data-f="label">
+        <input type="time" value="${b.start}" data-pi="${pi}" data-bi="${bi}" data-f="start">
+        <span>→</span>
+        <input type="time" value="${b.end}" data-pi="${pi}" data-bi="${bi}" data-f="end">
+        <button class="del" data-pi="${pi}" data-bi="${bi}">✕</button>`;
+      bl.appendChild(row);
+    });
+  });
+
+  el.querySelectorAll(".nameinput").forEach(i => i.addEventListener("input", e => {
+    state.people[+e.target.dataset.pi].name = e.target.value; renderViz();
+  }));
+  el.querySelectorAll(".tzslider").forEach(i => i.addEventListener("input", e => {
+    const pi = +e.target.dataset.pi;
+    state.people[pi].offset = parseFloat(e.target.value);
+    document.getElementById("tzlabel-" + pi).textContent = tzName(state.people[pi].offset);
+    renderViz();
+  }));
+  el.querySelectorAll(".blockrow input").forEach(i => i.addEventListener("input", e => {
+    const { pi, bi, f } = e.target.dataset;
+    state.people[+pi].blocks[+bi][f] = e.target.value; renderViz();
+  }));
+  el.querySelectorAll(".del").forEach(b => b.addEventListener("click", e => {
+    const { pi, bi } = e.target.dataset;
+    state.people[+pi].blocks.splice(+bi, 1); renderCards(); renderViz();
+  }));
+  el.querySelectorAll(".addbtn").forEach(b => b.addEventListener("click", e => {
+    state.people[+e.target.dataset.pi].blocks.push({ label: "Block", start: "12:00", end: "13:00" });
+    renderCards(); renderViz();
+  }));
+}
+
+function laneHTML(p) {
+  let segs = "";
+  for (const b of p.blocks) {
+    for (const [s, e] of axisSegments(p, b)) {
+      const w = (e - s) / 1440 * 100;
+      segs += `<div class="seg" style="left:${s / 1440 * 100}%;width:${w}%;background:${colorFor(b.label)}">${w > 6 ? b.label : ""}</div>`;
+    }
+  }
+  return `<div class="lanename">${p.name} <span style="font-weight:400;color:#9aa3af">(${tzName(p.offset)})</span></div>
+          <div class="lane">${segs}</div>`;
+}
+
+function renderViz() {
+  const [a, b] = state.people;
+  const busyA = busyArray(a), busyB = busyArray(b);
+  const d = shiftOf(b);
+
+  // segments libres en commun
+  const free = [];
+  let start = null;
+  for (let t = 0; t <= 1440; t++) {
+    const ok = t < 1440 && !busyA[t] && !busyB[t];
+    if (ok && start === null) start = t;
+    if (!ok && start !== null) { free.push([start, t]); start = null; }
+  }
+
+  // frise
+  let ticksTop = "", ticksBottom = "", grid = "";
+  for (let h = 0; h < 24; h += 2) {
+    const x = h / 24 * 100;
+    ticksTop += `<span style="left:${x}%">${fmt(h * 60)}</span>`;
+    ticksBottom += `<span style="left:${x}%">${fmt(h * 60 + d)}</span>`;
+  }
+  for (let h = 0; h < 24; h++) grid += `<i style="left:${h / 24 * 100}%"></i>`;
+
+  let overlapSegs = "";
+  for (const [s, e] of free) {
+    const w = (e - s) / 1440 * 100;
+    overlapSegs += `<div class="seg" style="left:${s / 1440 * 100}%;width:${w}%;background:#059669">${w > 8 ? "BOTH FREE" : ""}</div>`;
+  }
+
+  document.getElementById("timeline").innerHTML = `
+    <div class="ticks">${ticksTop}</div>
+    <div class="gridwrap">
+      <div class="gridlines">${grid}</div>
+      ${laneHTML(a)}
+      ${laneHTML(b)}
+      <div class="lanename" style="color:#059669">Free for both</div>
+      <div class="lane" style="background:#f0fdf4">${overlapSegs}</div>
+    </div>
+    <div class="ticks" style="margin-top:4px">${ticksBottom}</div>
+    <div style="font-size:11px;color:#9aa3af;margin-top:6px">Top row: ${a.name}'s time · bottom row: ${b.name}'s time</div>`;
+
+  // résumé
+  const total = free.reduce((acc, [s, e]) => acc + (e - s), 0);
+  let html = `<h3>Common free slots</h3>`;
+  if (total === 0) html += `<div class="none">No common free time 😬</div>`;
+  else {
+    html += `<div class="total">${Math.floor(total / 60)} h ${total % 60 ? (total % 60) + " min" : ""} total</div>`;
+    for (const [s, e] of free) {
+      html += `<div class="range"><b>${fmt(s)} → ${fmt(e)}</b> for ${a.name} &nbsp;=&nbsp; ${fmt(s + d)} → ${fmt(e + d)} for ${b.name}</div>`;
+    }
+  }
+  document.getElementById("summary").innerHTML = html;
+}
+
+renderCards();
+renderViz();
+</script>
+</body>
+</html>
