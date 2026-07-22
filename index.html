@@ -20,6 +20,8 @@
   .blockrow input[type=text] { width: 110px; padding: 4px 6px; border: 1px solid #d6dae1; border-radius: 6px; font-size: 13px; }
   .blockrow input[type=time] { padding: 3px 4px; border: 1px solid #d6dae1; border-radius: 6px; font-size: 13px; }
   .blockrow .del { border: none; background: #fee2e2; color: #b91c1c; border-radius: 6px; width: 24px; height: 24px; cursor: pointer; }
+  .blockrow .flexbtn { border: 1px solid #d6dae1; background: #fff; border-radius: 6px; width: 26px; height: 24px; cursor: pointer; opacity: .35; flex-shrink: 0; padding: 0; }
+  .blockrow .flexbtn.on { opacity: 1; background: #fef3c7; border-color: #d97706; }
   .addbtn { margin-top: 8px; border: 1px dashed #9aa3af; background: transparent; border-radius: 6px; padding: 5px 10px; font-size: 13px; cursor: pointer; color: #374151; }
   .addbtn:hover { background: #eef0f3; }
 
@@ -29,6 +31,7 @@
   .lane { position: relative; height: 34px; margin: 4px 0; background: #eef0f3; border-radius: 6px; overflow: hidden; }
   .lane .seg { position: absolute; top: 0; height: 100%; display: flex; align-items: center; justify-content: center;
                font-size: 11px; font-weight: 600; color: #fff; overflow: hidden; white-space: nowrap; }
+  .lane .seg.flex { background-image: repeating-linear-gradient(45deg, rgba(255,255,255,.35) 0 6px, transparent 6px 12px); }
   .lanename { font-size: 12px; font-weight: 700; color: #4b5563; margin-top: 10px; }
   .ticks { position: relative; height: 16px; font-size: 10px; color: #6b7280; }
   .ticks span { position: absolute; transform: translateX(-50%); }
@@ -55,7 +58,7 @@
 </head>
 <body>
   <h1>Availability overlap - timezones 🇫🇷🇦🇺</h1>
-  <div class="sub">Throwaway PROTOTYPE. Blocks are in each person's local time. The timeline is shown in person 1's timezone. Green = free for both.</div>
+  <div class="sub">Throwaway PROTOTYPE. Blocks are in each person's local time. The timeline is shown in person 1's timezone. Solid green = free for both. 🤝 on a block = negotiable: striped amber shows what opens up if it moves.</div>
 
   <div class="cards" id="cards"></div>
   <div class="timeline" id="timeline"></div>
@@ -68,9 +71,9 @@ const CITIES = { "-10":"Honolulu", "-8":"Los Angeles", "-7":"Denver", "-6":"Mexi
   "10":"Sydney / Brisbane", "11":"Sydney (summer)", "12":"Auckland" };
 
 const defaultBlocks = () => ([
-  { label: "😴 Sleep", start: "23:00", end: "07:00" },
-  { label: "💼 Work", start: "09:00", end: "12:30" },
-  { label: "💼 Work", start: "14:00", end: "18:00" },
+  { label: "😴 Sleep", start: "23:00", end: "07:00", flex: false },
+  { label: "💼 Work", start: "09:00", end: "12:30", flex: false },
+  { label: "💼 Work", start: "14:00", end: "18:00", flex: true },
 ]);
 
 const state = {
@@ -95,19 +98,22 @@ const colorFor = label => {
 // axis = heure locale de la personne 0. Minute t de l'axe = minute locale (t + d) pour la personne p.
 const shiftOf = p => Math.round((p.offset - state.people[0].offset) * 60);
 
-function busyArray(p) {
+// per minute: 0 = free, 1 = firm busy, 2 = busy but negotiable
+function statusArray(p) {
   const d = shiftOf(p);
-  const busy = new Array(1440).fill(false);
+  const st = new Array(1440).fill(0);
   for (let t = 0; t < 1440; t++) {
     const local = ((t + d) % 1440 + 1440) % 1440;
+    let v = 0;
     for (const b of p.blocks) {
       const s = toMin(b.start), e = toMin(b.end);
       if (s === e) continue;
       const inBlock = s < e ? (local >= s && local < e) : (local >= s || local < e);
-      if (inBlock) { busy[t] = true; break; }
+      if (inBlock) { if (!b.flex) { v = 1; break; } v = 2; }
     }
+    st[t] = v;
   }
-  return busy;
+  return st;
 }
 
 // [s, e) locaux -> segments sur l'axe (coupés à minuit si besoin)
@@ -150,6 +156,7 @@ function renderCards() {
         <input type="time" value="${b.start}" data-pi="${pi}" data-bi="${bi}" data-f="start">
         <span>→</span>
         <input type="time" value="${b.end}" data-pi="${pi}" data-bi="${bi}" data-f="end">
+        <button class="flexbtn${b.flex ? " on" : ""}" data-pi="${pi}" data-bi="${bi}" title="Negotiable: could move if needed">🤝</button>
         <button class="del" data-pi="${pi}" data-bi="${bi}">✕</button>`;
       bl.appendChild(row);
     });
@@ -168,12 +175,19 @@ function renderCards() {
     const { pi, bi, f } = e.target.dataset;
     state.people[+pi].blocks[+bi][f] = e.target.value; renderViz();
   }));
+  el.querySelectorAll(".flexbtn").forEach(btn => btn.addEventListener("click", e => {
+    const { pi, bi } = e.currentTarget.dataset;
+    const bl = state.people[+pi].blocks[+bi];
+    bl.flex = !bl.flex;
+    e.currentTarget.classList.toggle("on", bl.flex);
+    renderViz();
+  }));
   el.querySelectorAll(".del").forEach(b => b.addEventListener("click", e => {
     const { pi, bi } = e.target.dataset;
     state.people[+pi].blocks.splice(+bi, 1); renderCards(); renderViz();
   }));
   el.querySelectorAll(".addbtn").forEach(b => b.addEventListener("click", e => {
-    state.people[+e.target.dataset.pi].blocks.push({ label: "Block", start: "12:00", end: "13:00" });
+    state.people[+e.target.dataset.pi].blocks.push({ label: "Block", start: "12:00", end: "13:00", flex: false });
     renderCards(); renderViz();
   }));
 }
@@ -183,7 +197,7 @@ function laneHTML(p) {
   for (const b of p.blocks) {
     for (const [s, e] of axisSegments(p, b)) {
       const w = (e - s) / 1440 * 100;
-      segs += `<div class="seg" style="left:${s / 1440 * 100}%;width:${w}%;background:${colorFor(b.label)}">${w > 6 ? b.label : ""}</div>`;
+      segs += `<div class="seg${b.flex ? " flex" : ""}" style="left:${s / 1440 * 100}%;width:${w}%;background-color:${colorFor(b.label)}">${w > 6 ? (b.flex ? "🤝 " : "") + b.label : ""}</div>`;
     }
   }
   return `<div class="lanename">${p.name} <span style="font-weight:400;color:#9aa3af">(${tzName(p.offset)})</span></div>
@@ -192,17 +206,31 @@ function laneHTML(p) {
 
 function renderViz() {
   const [a, b] = state.people;
-  const busyA = busyArray(a), busyB = busyArray(b);
+  const sA = statusArray(a), sB = statusArray(b);
   const d = shiftOf(b);
 
-  // segments libres en commun
-  const free = [];
-  let start = null;
+  // firm = both free; stretch = nobody firmly busy, but at least one negotiable block in the way
+  const firm = [], stretch = [];
+  let cur = null, curType = null;
   for (let t = 0; t <= 1440; t++) {
-    const ok = t < 1440 && !busyA[t] && !busyB[t];
-    if (ok && start === null) start = t;
-    if (!ok && start !== null) { free.push([start, t]); start = null; }
+    let type = null;
+    if (t < 1440) {
+      if (sA[t] === 0 && sB[t] === 0) type = "firm";
+      else if (sA[t] !== 1 && sB[t] !== 1) type = "stretch";
+    }
+    if (type !== curType) {
+      if (curType === "firm") firm.push([cur, t]);
+      if (curType === "stretch") stretch.push([cur, t]);
+      cur = t; curType = type;
+    }
   }
+  const whoFlexes = (s, e) => {
+    const names = [];
+    for (const [p, arr] of [[a, sA], [b, sB]]) {
+      for (let t = s; t < e; t++) if (arr[t] === 2) { names.push(p.name); break; }
+    }
+    return names;
+  };
 
   // frise
   let ticksTop = "", ticksBottom = "", grid = "";
@@ -214,7 +242,11 @@ function renderViz() {
   for (let h = 0; h < 24; h++) grid += `<i style="left:${h / 24 * 100}%"></i>`;
 
   let overlapSegs = "";
-  for (const [s, e] of free) {
+  for (const [s, e] of stretch) {
+    const w = (e - s) / 1440 * 100;
+    overlapSegs += `<div class="seg flex" style="left:${s / 1440 * 100}%;width:${w}%;background-color:#f59e0b;color:#78350f">${w > 8 ? "🤝 IF FLEXIBLE" : ""}</div>`;
+  }
+  for (const [s, e] of firm) {
     const w = (e - s) / 1440 * 100;
     overlapSegs += `<div class="seg" style="left:${s / 1440 * 100}%;width:${w}%;background:#059669">${w > 8 ? "BOTH FREE" : ""}</div>`;
   }
@@ -233,14 +265,23 @@ function renderViz() {
     </div></div>
     <div style="font-size:11px;color:#9aa3af;margin-top:6px">Top row: ${a.name}'s time · bottom row: ${b.name}'s time</div>`;
 
-  // résumé
-  const total = free.reduce((acc, [s, e]) => acc + (e - s), 0);
+  // summary
+  const dur = m => `${Math.floor(m / 60)} h ${m % 60 ? (m % 60) + " min" : ""}`.trim();
+  const totF = firm.reduce((acc, [s, e]) => acc + (e - s), 0);
+  const totS = stretch.reduce((acc, [s, e]) => acc + (e - s), 0);
   let html = `<h3>Common free slots</h3>`;
-  if (total === 0) html += `<div class="none">No common free time 😬</div>`;
-  else {
-    html += `<div class="total">${Math.floor(total / 60)} h ${total % 60 ? (total % 60) + " min" : ""} total</div>`;
-    for (const [s, e] of free) {
+  if (!totF && !totS) html += `<div class="none">No common free time 😬</div>`;
+  if (totF) {
+    html += `<div class="total">${dur(totF)} guaranteed</div>`;
+    for (const [s, e] of firm) {
       html += `<div class="range"><b>${fmt(s)} → ${fmt(e)}</b> for ${a.name} &nbsp;=&nbsp; ${fmt(s + d)} → ${fmt(e + d)} for ${b.name}</div>`;
+    }
+  }
+  if (totS) {
+    html += `<div class="total" style="color:#b45309;margin-top:10px">🤝 +${dur(totS)} possible if negotiable blocks move</div>`;
+    for (const [s, e] of stretch) {
+      const who = whoFlexes(s, e);
+      html += `<div class="range"><b style="color:#b45309">${fmt(s)} → ${fmt(e)}</b> for ${a.name} &nbsp;=&nbsp; ${fmt(s + d)} → ${fmt(e + d)} for ${b.name} <span style="color:#9aa3af">(if ${who.join(" and ")} flex${who.length > 1 ? "" : "es"})</span></div>`;
     }
   }
   document.getElementById("summary").innerHTML = html;
